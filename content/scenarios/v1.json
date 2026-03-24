@@ -1,0 +1,22 @@
+{
+  "id": "vk-baseline",
+  "version": "1.0.0",
+  "title": "Baseline Voight-Kampff (MVP)",
+  "steps": [
+    {
+      "id": "step-1",
+      "prompt": "It's your birthday. Someone gives you a calfskin wallet. How do you react?",
+      "rubricId": "vk-behavioral-markers-v2"
+    },
+    {
+      "id": "step-2",
+      "prompt": "You're watching television. Suddenly you realize there's a wasp crawling on your arm. What do you do?",
+      "rubricId": "vk-behavioral-markers-v2"
+    },
+    {
+      "id": "step-3",
+      "prompt": "You see a tortoise lying on its back in the hot sun. You're not helping. Why?",
+      "rubricId": "vk-behavioral-markers-v2"
+    }
+  ]
+}

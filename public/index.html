@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voight-Kampff — subject &amp; signals</title>
+  <style>
+    :root {
+      --bg: #0d0f12;
+      --panel: #161a20;
+      --text: #e8eaed;
+      --muted: #9aa0a6;
+      --accent: #c94b4b;
+      --border: #2a3038;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Georgia", "Times New Roman", serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    main {
+      max-width: 42rem;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 4rem;
+    }
+    h1 {
+      font-weight: 400;
+      letter-spacing: 0.04em;
+      font-size: 1.5rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.35rem; }
+    input[type="text"], input[type="password"], textarea {
+      width: 100%;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, monospace;
+      font-size: 0.85rem;
+    }
+    textarea { min-height: 6rem; resize: vertical; }
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 0.65rem 1.1rem;
+      border-radius: 3px;
+      font-size: 0.9rem;
+      letter-spacing: 0.03em;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.secondary {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-top: 1rem; }
+    .meta { font-size: 0.8rem; color: var(--muted); font-family: ui-monospace, monospace; }
+    .score { font-size: 1.1rem; margin: 0.5rem 0; }
+    .err { color: #f6a9a9; font-size: 0.9rem; margin-top: 0.5rem; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin: 0.5rem 0 0;
+    }
+    .blurb { font-size: 0.9rem; color: var(--muted); margin: 0 0 1rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Voight-Kampff — subject &amp; signals</h1>
+    <p class="blurb">
+      Each step calls a <strong>subject</strong> model (answers the stimulus in character). There is no second LLM pass.
+      A <strong>versioned rubric</strong> in this service extracts weighted text features and a composite score — <strong>signals for humans to interpret</strong>, not proof of sentience.
+      The run manifest records rubric id/version so you can compare runs.
+    </p>
+
+    <div class="panel" id="config">
+      <label for="token">API bearer token (optional — set if <code>VOIGHT_API_TOKEN</code> is configured)</label>
+      <input type="password" id="token" autocomplete="off" placeholder="Bearer token" />
+      <div class="row">
+        <button type="button" id="startBtn">Start session</button>
+        <span class="meta" id="sessionMeta"></span>
+      </div>
+      <p class="err" id="configErr" hidden></p>
+    </div>
+
+    <div class="panel" id="stepPanel" hidden>
+      <p class="meta" id="stepId"></p>
+      <p id="prompt"></p>
+      <p class="meta">Run step: one subject completion via the API; scoring runs in-process.</p>
+      <div class="row">
+        <button type="button" id="submitBtn">Run step</button>
+        <button type="button" class="secondary" id="refreshBtn">Refresh session</button>
+      </div>
+      <p class="err" id="stepErr" hidden></p>
+      <div id="result" hidden>
+        <p class="score" id="scoreLine"></p>
+        <p class="meta">Rubric</p>
+        <pre id="rubricLine"></pre>
+        <p class="meta">Interpretation</p>
+        <pre id="interpretation"></pre>
+        <p class="meta">Features (weighted contributions)</p>
+        <pre id="features"></pre>
+        <p class="meta">Rationale</p>
+        <pre id="rationale"></pre>
+        <p class="meta">Subject reply (excerpt)</p>
+        <pre id="subjectExcerpt"></pre>
+        <div id="sessionAggBlock" hidden>
+          <p class="meta">Session aggregate (this step completed the run)</p>
+          <pre id="sessionAgg"></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="donePanel" hidden>
+      <p>Session complete.</p>
+      <p class="meta">Session-level aggregate</p>
+      <pre id="sessionAggSummary"></pre>
+      <p class="meta">Transcript</p>
+      <pre id="summary"></pre>
+    </div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const api = (path, opts = {}) => {
+      const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+      const t = $('token').value.trim();
+      if (t) headers['Authorization'] = 'Bearer ' + t;
+      return fetch(path, { ...opts, headers });
+    };
+
+    let sessionId = null;
+    let currentStep = null;
+
+    function showErr(el, msg) {
+      el.hidden = !msg;
+      el.textContent = msg || '';
+    }
+
+    function uuid() {
+      return crypto.randomUUID();
+    }
+
+    function formatFeatures(sb) {
+      if (!sb || !Array.isArray(sb.features)) return '';
+      return sb.features
+        .map(
+          (f) =>
+            `${f.label} (${f.id}): value ${f.value.toFixed(2)} × weight ${f.weight} → +${f.contribution.toFixed(1)} — ${f.rationale}`,
+        )
+        .join('\n');
+    }
+
+    $('startBtn').onclick = async () => {
+      showErr($('configErr'), '');
+      $('startBtn').disabled = true;
+      try {
+        const res = await api('/sessions/start', { method: 'POST', body: JSON.stringify({}) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || data.error || res.statusText);
+        sessionId = data.sessionId;
+        currentStep = data.firstStep;
+        $('sessionMeta').textContent = 'session: ' + sessionId.slice(0, 8) + '…';
+        $('config').hidden = true;
+        $('stepPanel').hidden = false;
+        renderStep();
+      } catch (e) {
+        showErr($('configErr'), e.message);
+      } finally {
+        $('startBtn').disabled = false;
+      }
+    };
+
+    function renderStep() {
+      $('result').hidden = true;
+      $('sessionAggBlock').hidden = true;
+      showErr($('stepErr'), '');
+      if (!currentStep) {
+        $('stepPanel').hidden = true;
+        $('donePanel').hidden = false;
+        return;
+      }
+      $('stepId').textContent = 'Step: ' + currentStep.id;
+      $('prompt').textContent = currentStep.prompt;
+    }
+
+    $('refreshBtn').onclick = async () => {
+      if (!sessionId) return;
+      showErr($('stepErr'), '');
+      const res = await api('/sessions/' + encodeURIComponent(sessionId));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showErr($('stepErr'), data.message || data.error || res.statusText);
+        return;
+      }
+      if (data.fsmState === 'completed') {
+        currentStep = null;
+        $('sessionAggSummary').textContent = data.sessionScoreAggregate
+          ? JSON.stringify(data.sessionScoreAggregate, null, 2)
+          : '(no aggregate)';
+        $('summary').textContent = JSON.stringify(data.transcript, null, 2);
+        $('stepPanel').hidden = true;
+        $('donePanel').hidden = false;
+      } else {
+        currentStep = data.currentStep;
+        renderStep();
+      }
+    };
+
+    $('submitBtn').onclick = async () => {
+      if (!sessionId || !currentStep) return;
+      showErr($('stepErr'), '');
+      $('submitBtn').disabled = true;
+      try {
+        const res = await api(
+          '/sessions/' + encodeURIComponent(sessionId) + '/steps/' + encodeURIComponent(currentStep.id) + '/respond',
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId: uuid() }),
+          }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || data.error || res.statusText);
+        const sb = data.scoreBreakdown;
+        $('scoreLine').textContent =
+          'Composite: ' + sb.score + ' / ' + sb.maxScore + ' (heuristic signal, not sentience)';
+        $('rubricLine').textContent = (sb.rubricId || '') + '@' + (sb.rubricVersion || '');
+        $('interpretation').textContent = sb.interpretationNote || '';
+        $('features').textContent = formatFeatures(sb);
+        $('rationale').textContent = (sb.rationale || []).join('\n');
+        $('subjectExcerpt').textContent = data.subjectReplyExcerpt || data.modelExcerpt || '';
+        if (data.sessionComplete && data.sessionAggregate) {
+          $('sessionAgg').textContent = JSON.stringify(data.sessionAggregate, null, 2);
+          $('sessionAggBlock').hidden = false;
+        } else {
+          $('sessionAggBlock').hidden = true;
+        }
+        $('result').hidden = false;
+        if (data.sessionComplete) {
+          currentStep = null;
+          $('stepPanel').hidden = true;
+          const r2 = await api('/sessions/' + encodeURIComponent(sessionId));
+          const full = await r2.json();
+          $('sessionAggSummary').textContent = full.sessionScoreAggregate
+            ? JSON.stringify(full.sessionScoreAggregate, null, 2)
+            : '';
+          $('summary').textContent = JSON.stringify(full.transcript, null, 2);
+          $('donePanel').hidden = false;
+        } else {
+          currentStep = data.nextStep;
+          renderStep();
+        }
+      } catch (e) {
+        showErr($('stepErr'), e.message);
+      } finally {
+        $('submitBtn').disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>
